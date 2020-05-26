@@ -4,7 +4,7 @@
 
 
 Android性能优化
-1.稳定性优化
+[1.稳定性优化](https://www.jianshu.com/p/7d2f651b6d09)
 
 2.启动速度优化
 
