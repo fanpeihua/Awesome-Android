@@ -1,0 +1,243 @@
+## 1. 工具选择
+#### **CPU Profiler、Systrace、StrictMode**
+
+原因复杂：代码、内存、绘制、IO均有可能导致卡顿。难以定位。
+不易复现：当时场景强相关。
+
+#### **CPU Profiler**：
+
+图形的形式展示执行时间、调用栈等。信息全面，包含所有线程。整体会变慢。
+使用方式：
+
+> Debug.startMethodTracing(""); 
+> Debug.stopMethodTracing("");
+
+生成文件在SD卡：Android/data/packagename/files
+
+#### **Systrace**：
+
+监控和跟踪Api调用、线程运行情况，生成Html报告
+
+API 18以上使用，推荐TraceCompat
+> python systrace.py -t 10 [other-options] [categories]
+
+[https://developer.android.com/studio/command-line/systrace#command_options](https://developer.android.com/studio/command-line/systrace#command_options)
+
+优点：轻量级、开销小。直观反映CPU利用率。给出建议（Alert）
+StrictMode：严苛模式，Android提供的一种运行时检测机制。方便强大，容易被忽视。
+包含：线程策略和虚拟机策略检测。
+
+线程策略：自定义的耗时调用，detectCustomSlowCalls()
+磁盘读取操作，detectDiskReads
+网络请求操作
+
+#### **虚拟机策略：**
+
+Activity泄漏，detectActivityLeaks()
+Sqlite泄漏，detecteLeakedSqliteObjects
+检测实例数量，setClassInstanceLimit()
+
+
+
+## 2. 自动化卡顿检测方案及优化
+
+#### **原理**：
+
+一个线程只有一个Looper
+mLogging对象在每个message处理前后被调用
+主线程发生卡顿，是在dispatchMessage执行耗时操作
+
+#### 具体实现：
+
+1）Looper.getMainLooper().setMessageLogging();
+2）匹配>>>>>Dispatching，阈值时间后执行任务（获取堆栈）
+3）匹配<<<<<Finished，任务启动之前取消掉
+
+AndroidPermormanceMonitor实战（blockcanary）
+非侵入性的性能监控组件，通知形式弹出卡顿信息
+
+#### **问题及优化**
+
+卡顿了，但卡顿堆栈可能不准确。和OOM一样，最后的堆栈只是表象，不是真正的问题。
+
+优化：获取监控周期内的多个堆栈，而不仅是最后一个。
+startMonitor -> 高频采集堆栈-> endMonitor -> 记录多个堆栈 -> 上报
+
+#### **海量卡顿堆栈处理**
+
+高频卡顿上报量太大，服务端有压力。
+分析：一个卡顿下多个堆栈大概率有重复
+解决：对一个卡顿下堆栈进行hash排重，找出重复的堆栈。
+效果：极大的减少展示量且找到真正发生问题的堆栈。
+
+
+
+## 3. ANR分析与实战
+**KeyDispatchTimeout**：5s
+**BroadcastTimeout**：前台10s，后台60s
+**ServiceTimeout**：前台20s，后台200s
+
+ANR执行流程：发生ANR，进程接收异常终止信号，开始写入进程ANR信息。
+弹出ANR提示框（ROM表现不一）
+
+##### ANR解决套路：
+
+> adb pull data/anr/traces.txt 
+
+存储路径。 根据此路径来判断是否ANR
+详细分析：cpu/io
+
+##### **线上ANR监控方案**
+
+通过FileObserver 监控文件变化，高版本会有权限问题
+
+##### **ANR-WatchDog**
+
+非侵入式ANR监控组件
+
+> com.github.anrwatchdog:anrwatchdog:1.3.0
+
+[https://github.com/SalomonBrys/ANR-WatchDog](https://github.com/SalomonBrys/ANR-WatchDog)
+
+##### **原理：**
+
+start -> post消息改值(主线程+1操作) -> 线程sleep
+检测值是否被修改 ->判断ANR发生（没有被修改 message没有到即发生）
+弥补高版本没有权限读取Trace.txt 的问题。结合使用
+和BlockCanary区别：
+BlockCanary监控Msg。适合监控卡顿。
+ANR-WatchDog：看最终结果。适合补充ANR监控。
+
+
+
+## 3. 卡顿单点问题检测方案
+
+自动化卡顿检测方案并不够。很多操作的耗时并没有达到卡顿阈值，感受同样不佳但是不会抛出异常堆栈信息。
+
+体系化解决方案务必尽早暴露问题。
+单点问题：主线程IPC、DB IO、View绘制操作
+
+#### IPC问题监测：
+
+监测指标：IPC调用类型
+调用耗时、次数
+调用堆栈、发生线程。
+
+#### **常规方案：**
+
+IPC前后加埋点。不够优雅，容易忘记。维护成本大。
+
+adb命令：
+> adb shell am trace-ipc start // 监控的开始
+> adb shell am trace-ipc stop --dump-file /data/local/tmp/ipc-trace.txt 
+> //结束，存放信息
+> adb pull /data/local/tmp/ipc-trace.txt // 导出
+
+#### 优雅方案：
+
+`ARTHook` 还是 `AspectJ`？
+ARTHook 可以Hook系统方法。ASpectJ针对非系统方法。
+
+IPC场景：PackageManger得到应用信息、get到设备的ID、AMS等等。
+固定的调用方式，最后会调用到 “android.os.BinderProxy” transact方法
+
+
+
+## 4. 如何实现界面秒开
+首先通过Systrace（查看是否跑满CPU），优雅异步 + 优雅延迟初始化。
+异步Inflate、X2C、绘制优化
+提前获取页面数据
+
+#### **界面秒开率统计：**
+
+onCreate 到 onWindowFocusChanged
+特定接口适配Activity
+
+#### **Lancet：**
+
+轻量级 AOP框架
+编译速度快，支持增量编译
+
+API简单，没有任何多余代码插入 apk
+@Proxy 通常用与对系统API调用的Hook
+@Insert 常用于操作 App与library的类
+
+#### **界面秒开监控维度**
+
+1）onCreate到onWindowFocusChanged 两方法调用的时间间隔。
+总体耗时。
+2）生命周期的耗时。
+3）生命周期间隔的耗时
+
+## 5. 优雅监控耗时盲区
+
+#### **生命周期间隔**
+
+onResume到Feed展示的间隔
+举例：postMessage，很有可能在Feed之前执行
+
+#### **TraceView**
+
+特别适合一段时间内的盲区监控
+线程具体时间做了什么，一目了然。
+TraceView适合现在，可以监控系统Msg。
+动态替换适合线上，只有应用自身的Msg
+
+#### **线上方案：**
+
+所有方法都是Msg，mLogging？没有Msg具体堆栈
+AOP切Handler方法？不清楚准确执行时间
+使用统一的Handler：定制具体方法
+定制gradle插件，编译器动态替换。
+
+## 6. 卡顿优化技巧总结初步
+耗时操作：异步、延迟
+布局优化：异步Inflate、X2C、重绘解决
+内存：降低内存占用，减少GC时间。
+> Log / TraceView的HeapTaskDesk
+
+##### **卡顿优化工具建设**
+
+Systrace：看出CPU使用情况
+TraceView：看出线程在特定时间做什么。相对开销比较大。
+
+StrictMode也是很强大的
+自动化监控工具建设。
+
+Android Performance monitor。ANR - WatchDog
+高频采集，找出重复率高的堆栈。
+
+##### **卡顿监控工具**
+
+单点问题：AOP、Hook
+
+盲区监控：gradle 编译器替换。监控所有主线程msg执行耗时，以及调用堆栈 superHandler。
+
+通过注解调整所有Handler的父类。
+
+##### **卡顿监控指标：**
+
+卡顿率、ANR率、界面秒开时间
+
+交互时间、生命周期时间
+上报环境、场景信息！
+
+## 7. 卡顿优化问题
+##### 1）你是怎么做卡顿优化的？
+
+体现出来不同阶段的进步，结构化思维。
+经历了一些阶段，第一阶段：系统工具定位、解决。
+第二阶段：自动化卡顿方案及优化。
+第三阶段：线上卡顿及线下监测工具建设。
+
+##### 2）你是怎么自动化的获取卡顿信息的？
+
+> mLogging.println
+
+不一定准确。可以高频采集，找出重复堆栈！
+
+##### 3）卡顿的一整套解决方案是怎么做的？
+
+线下（尽量早）、线上（全面自动化、异常感知灵敏度）工具相结合的方式
+特定难点突破：单点问题、盲区监控
+SuperHandler
