@@ -2,6 +2,7 @@
 ---
 
 Android性能优化
+
 [1.稳定性优化](https://github.com/fanpeihua/Awesome-Android/blob/master/performance/01.%E7%A8%B3%E5%AE%9A%E6%80%A7%E4%BC%98%E5%8C%96.md)
 
 [2.启动速度优化](https://github.com/fanpeihua/Awesome-Android/blob/master/performance/10.%E5%8D%A1%E9%A1%BF%E4%BC%98%E5%8C%96.md)
